@@ -6,7 +6,7 @@ from langdetect import detect
 import time
 
 # Set up YouTube API key and initialize the YouTube client
-API_KEY = 'AIzaSyBP-PUkvPMTTHeOERIPPY32L5YLvXylvQI'  # Replace with your actual API key
+API_KEY = 'YOUR_API_KEY'  # Replace with your actual API key
 youtube = build('youtube', 'v3', developerKey=API_KEY)
 
 # List of languages to show (ISO 639-1 codes)
