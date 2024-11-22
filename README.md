@@ -5,3 +5,5 @@ search.py - uses API from searching engines to search for a file across the inte
 httpdownloader.py - a video downloader (ts/mp4/mov/m3u8) for static or any type of websites.
 
 kylgr.py - basically a keylogger.
+
+yturlsearcher.py - generates YouTube links and checks if the video exists (needs the API Key)
