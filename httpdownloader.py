@@ -10,6 +10,7 @@ from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.common.by import By
 from webdriver_manager.firefox import GeckoDriverManager
 from colorama import Fore, Style, init
+import subprocess
 
 # Initialize colorama
 init(autoreset=True)
@@ -31,7 +32,7 @@ USER_AGENTS = [
 EXCLUDED_DOMAINS = ['youtube.com', 'instagram.com', 'facebook.com', 'twitter.com', 'discord.com', 'telegram.org']
 EXCLUDED_EXTENSIONS = ['.jpg', '.jpeg', '.gif', '.png']  # Excluded image formats
 EXCLUDED_DIRS = ['/thumb/', '/thumbnail/', '/thumbnails/', '/tmb/', '/ads/', '/ad/', '/ads_content/']  # Directories to exclude
-INCLUDED_DIRS = ['/videos/', '/video/', '/mp4/', '/hls/', '/get_file/', '/get_files/']  # Directories to include
+INCLUDED_DIRS = ['/videos/', '/video/', '/mp4/', '/hls/', '/get_file/', '/get_files/', '/watch/', '/ifr/', '/files/']  # Directories to include
 
 DEBUG_MODE = True  # Set to False to disable debug prints
 
@@ -99,7 +100,7 @@ def fetch_with_selenium(url):
         options.add_argument('--headless')  # Run headless to avoid opening a browser window
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
-        
+
         # Firefox WebDriver setup
         driver = webdriver.Firefox(service=Service(GeckoDriverManager().install()), options=options)
         driver.get(url)
@@ -127,7 +128,7 @@ def find_video_links(page_content, base_url):
         r'https?://[^\s]+\.mov',   # mov pattern
         r'https?://[^\s]+\.m4v'    # m4v pattern
     ]
-    
+
     for pattern in patterns:
         matches = re.findall(pattern, page_content)
         for match in matches:
@@ -145,12 +146,12 @@ def find_video_links(page_content, base_url):
                 verbose_print(f"Found video link (relative URL): {video_url}")
                 video_urls.append(video_url)
 
-    # Find and scrape embed links
-    for iframe in soup.find_all('iframe', src=True):
+    # Find and scrape embed and iframe links
+    for iframe in soup.find_all(['iframe', 'embed'], src=True):
         iframe_src = iframe['src']
-        if '/embed/' in iframe_src:
+        if '/embed/' in iframe_src or '/ifr/' in iframe_src:
             embed_url = urljoin(base_url, iframe_src)  # Ensure absolute URL
-            verbose_print(f"Found embed link: {embed_url}")
+            verbose_print(f"Found embed/iframe link: {embed_url}")
             embed_page_content = fetch_page(embed_url)
             if embed_page_content:
                 video_urls.extend(find_video_links(embed_page_content, embed_url))
@@ -162,7 +163,7 @@ def find_video_links(page_content, base_url):
     # Exclude videos from certain directories, but **not** from directories in INCLUDED_DIRS
     video_urls = [url for url in video_urls if not any(excluded_dir in url and not any(included_dir in url for included_dir in INCLUDED_DIRS) for excluded_dir in EXCLUDED_DIRS)]
     debug_print(f"Video links after filtering excluded directories: {video_urls}")
-    
+
     # Block any file that contains "preview" in the name or URL
     video_urls = [url for url in video_urls if "preview" not in os.path.basename(url).lower()]
     debug_print(f"Video links after filtering 'preview' in the filename: {video_urls}")
@@ -178,7 +179,7 @@ def download_video(url, download_folder="downloads"):
     try:
         response = requests.get(url, stream=True)
         response.raise_for_status()  # Raise an exception for HTTP errors
-        
+
         # Get the total file size from the response headers
         total_size = int(response.headers.get('Content-Length', 0))
         filename = url.split('/')[-1]
@@ -209,6 +210,51 @@ def download_video(url, download_folder="downloads"):
     except requests.RequestException as e:
         error_print(f"Error downloading {url}: {e}")
 
+def download_playlist(playlist_url, download_folder="downloads"):
+    """Download a playlist (m3u8) and merge into a single file."""
+    try:
+        response = requests.get(playlist_url)
+        response.raise_for_status()
+        playlist_content = response.text
+
+        # Create a temporary directory for the segments
+        temp_dir = os.path.join(download_folder, "temp_segments")
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
+
+        # Download each segment
+        segment_urls = re.findall(r'https?://[^\s]+', playlist_content)
+        for i, segment_url in enumerate(segment_urls):
+            segment_response = requests.get(segment_url, stream=True)
+            segment_response.raise_for_status()
+            segment_filename = os.path.join(temp_dir, f"segment_{i}.ts")
+            with open(segment_filename, 'wb') as segment_file:
+                for chunk in segment_response.iter_content(chunk_size=8192):
+                    if chunk:
+                        segment_file.write(chunk)
+
+        # Merge segments into a single file
+        merged_filename = os.path.join(download_folder, "merged_video.mp4")
+        with open(merged_filename, 'wb') as merged_file:
+            for i in range(len(segment_urls)):
+                segment_filename = os.path.join(temp_dir, f"segment_{i}.ts")
+                with open(segment_filename, 'rb') as segment_file:
+                    merged_file.write(segment_file.read())
+
+        print(f"Merged video saved as: {merged_filename}")
+
+        # Clean up temporary segments
+        for i in range(len(segment_urls)):
+            segment_filename = os.path.join(temp_dir, f"segment_{i}.ts")
+            os.remove(segment_filename)
+        os.rmdir(temp_dir)
+
+        # Ask if user wants to rename the file after download
+        rename_file(merged_filename)
+
+    except requests.RequestException as e:
+        error_print(f"Error downloading playlist {playlist_url}: {e}")
+
 def rename_file(filepath):
     """Prompt the user to rename the downloaded file."""
     rename = input("Do you want to rename the downloaded file? (yes/no): ").strip().lower()
@@ -235,7 +281,10 @@ def ask_to_download(url):
     """Ask the user if they want to download a video URL with a file extension."""
     answer = input(f"Do you want to download the video: {url} (yes/no)? ").strip().lower()
     if answer in ['yes', 'y']:
-        download_video(url)
+        if url.endswith('.m3u8'):
+            download_playlist(url)
+        else:
+            download_video(url)
     else:
         print(f"{Fore.LIGHTGREEN_EX}[INFO] Download cancelled.")
 
@@ -275,10 +324,10 @@ def main():
     if not is_valid_url(website_url):
         error_print('[ERROR] Invalid URL format. Please check the URL and try again.')
         return
-    
+
     # Scrape the provided website
     video_links = scrape_website(website_url, use_selenium=args.selenium)
-    
+
     if video_links:
         print("\nFound the following video links:")
         for i, link in enumerate(video_links, start=1):
@@ -308,4 +357,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
